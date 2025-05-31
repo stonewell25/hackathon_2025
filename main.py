@@ -14,7 +14,7 @@ hands = mp_hands.Hands(
 mp_drawing = mp.solutions.drawing_utils
 
 # 画像の読み込み
-overlay_image = cv2.imread('images/shu-tan.jpg')
+overlay_image = cv2.imread('images/iwa-ku.jpg')
 if overlay_image is None:
     raise ValueError("画像が読み込めませんでした")
 
@@ -45,10 +45,11 @@ POINTING_TIME_THRESHOLD = 0.1  # 秒単位での静止時間閾値
 
 # 状態管理用の定数を更新
 class PointingState:
-    NONE = 0          # 初期状態
-    POINTING = 1      # 指差し中
-    POINT_FIXED = 2   # ポイント確定
-    ZOOMING = 3       # ズーム中
+    INITIAL_PLACEMENT = 0  # 初期配置モード
+    NONE = 1          # 初期状態
+    POINTING = 2      # 指差し中
+    POINT_FIXED = 3   # ポイント確定
+    ZOOMING = 4       # ズーム中
 
 class ZoomDirection:
     NONE = 0
@@ -56,13 +57,18 @@ class ZoomDirection:
     ZOOM_OUT = 2
 
 # グローバル変数
-current_state = PointingState.NONE
+current_state = PointingState.INITIAL_PLACEMENT
 pointing_start_time = None
 last_index_pos = None
 fixed_point = None
 current_scale = 1.0
 base_scale = 1.0
 prev_area = None
+
+initial_position = None  # 画像の初期位置
+placement_start_time = None  # 配置開始時間
+PLACEMENT_TIME_THRESHOLD = 1.0  # 配置確定までの時間（秒）
+last_placement_pos = None  # 最後の配置位置
 
 # グローバル変数に追加
 last_stable_scale = 1.0  # 最後に安定していたスケール
@@ -71,6 +77,16 @@ pinch_release_threshold = 0.15  # ピンチ解除を検出する閾値
 SCALE_SMOOTHING_FACTOR = 0.3  # スケール変化の滑らかさ（0.1-0.5の間で調整）
 MIN_SCALE_CHANGE = 0.01  # 最小スケール変化量
 scale_velocity = 0.0  # スケール変化の速度
+
+def check_finger_stable(current_pos, last_pos, threshold=5):
+    """指の位置が安定しているかチェック"""
+    if last_pos is None:
+        return False
+    distance = math.sqrt(
+        (current_pos[0] - last_pos[0]) ** 2 +
+        (current_pos[1] - last_pos[1]) ** 2
+    )
+    return distance < threshold
 
 def get_index_finger_tip(hand_landmarks, frame_width, frame_height):
     """人差し指の先端の座標を取得"""
@@ -277,6 +293,93 @@ while cap.isOpened():
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(image_rgb)
 
+    # 画像の表示処理
+    try:
+        if current_state == PointingState.INITIAL_PLACEMENT:
+            # 初期配置モード時の処理
+            if results.multi_hand_landmarks:
+                hand_landmarks = results.multi_hand_landmarks[0]
+                index_pos = get_index_finger_tip(hand_landmarks, frame.shape[1], frame.shape[0])
+                
+                # 画像を指に追従させて表示
+                viewport_x = index_pos[0] - VIEWPORT_WIDTH // 2
+                viewport_y = index_pos[1] - VIEWPORT_HEIGHT // 2
+                
+                # 画面外にはみ出さないように調整
+                viewport_x = max(0, min(viewport_x, frame.shape[1] - VIEWPORT_WIDTH))
+                viewport_y = max(0, min(viewport_y, frame.shape[0] - VIEWPORT_HEIGHT))
+                
+                # 指の位置が安定しているかチェック
+                if check_finger_stable(index_pos, last_placement_pos):
+                    if placement_start_time is None:
+                        placement_start_time = time.time()
+                        cv2.putText(frame, 
+                                  "Placing...", # 英語で表示
+                                  (10, 30),
+                                  cv2.FONT_HERSHEY_SIMPLEX,
+                                  1,
+                                  (0, 255, 0),
+                                  2,
+                                  cv2.LINE_AA)
+                    elif time.time() - placement_start_time > PLACEMENT_TIME_THRESHOLD:
+                        # 位置を確定
+                        initial_position = (viewport_x, viewport_y)
+                        current_state = PointingState.NONE
+                        cv2.putText(frame, 
+                                  "Placed!!", # 英語で表示
+                                  (10, 30),
+                                  cv2.FONT_HERSHEY_SIMPLEX,
+                                  1,
+                                  (0, 255, 0),
+                                  2,
+                                  cv2.LINE_AA)
+                else:
+                    placement_start_time = None
+                
+                last_placement_pos = index_pos
+                
+                # 仮の位置に画像を表示
+                zoomed_image, _ = apply_zoom(overlay_image, 1.0, VIEWPORT_WIDTH // 2, VIEWPORT_HEIGHT // 2)
+                frame[viewport_y:viewport_y+VIEWPORT_HEIGHT,
+                      viewport_x:viewport_x+VIEWPORT_WIDTH] = zoomed_image
+                
+                # 配置中であることを示す枠を表示
+                color = (0, 255, 0) if placement_start_time is not None else (0, 0, 255)
+                cv2.rectangle(frame, 
+                            (viewport_x, viewport_y),
+                            (viewport_x + VIEWPORT_WIDTH, viewport_y + VIEWPORT_HEIGHT),
+                            color, 2)
+        
+        else:
+            # 通常モードでの表示処理（既存のコード）
+            if initial_position is not None:
+                viewport_x, viewport_y = initial_position
+                if fixed_point is not None:
+                    zoomed_image, offset = apply_zoom(
+                        overlay_image,
+                        current_scale,
+                        fixed_point[0] - viewport_x,
+                        fixed_point[1] - viewport_y
+                    )
+                else:
+                    zoomed_image, offset = apply_zoom(
+                        overlay_image,
+                        1.0,
+                        VIEWPORT_WIDTH // 2,
+                        VIEWPORT_HEIGHT // 2
+                    )
+                
+                frame[viewport_y:viewport_y+VIEWPORT_HEIGHT,
+                      viewport_x:viewport_x+VIEWPORT_WIDTH] = zoomed_image
+                
+                cv2.rectangle(frame, 
+                            (viewport_x, viewport_y),
+                            (viewport_x + VIEWPORT_WIDTH, viewport_y + VIEWPORT_HEIGHT),
+                            (0, 255, 0), 2)
+    
+    except Exception as e:
+        print(f"表示エラー: {e}")
+
     if results.multi_hand_landmarks and results.multi_handedness:
         for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
             # 手の種類を判定（右手/左手）
@@ -292,7 +395,7 @@ while cap.isOpened():
                         reset_state()
                         # リセット時のフィードバック表示
                         cv2.putText(frame, 
-                                "リセットしました",
+                                "Reset!!", # 英語で表示
                                 (10, 60), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 
                                 1,
@@ -447,6 +550,7 @@ while cap.isOpened():
         print(f"表示エラー: {e}")
     # 状態表示
     status_text = {
+        PointingState.INITIAL_PLACEMENT: "initial placement",
         PointingState.NONE: "waiting",
         PointingState.POINTING: "pointing",
         PointingState.POINT_FIXED: "fixed",
