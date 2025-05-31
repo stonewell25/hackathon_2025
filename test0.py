@@ -20,6 +20,8 @@ initial_height = 200  # 初期高さ
 image_x = 300  # 画像のx座標
 image_y = 200  # 画像のy座標
 
+# パンパース
+
 # カメラからの映像をキャプチャ
 cap = cv2.VideoCapture(1)
 
