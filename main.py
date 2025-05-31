@@ -271,7 +271,7 @@ def reset_state():
     global current_state, pointing_start_time, last_index_pos, fixed_point
     global current_scale, base_scale, prev_area, last_stable_scale, scale_velocity
     
-    current_state = PointingState.NONE
+    current_state = PointingState.INITIAL_PLACEMENT 
     pointing_start_time = None
     last_index_pos = None
     fixed_point = None
